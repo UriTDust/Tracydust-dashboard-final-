@@ -1,0 +1,453 @@
+# Tracy Dust — Dashboard Spec v2 para Claude Code
+> Stack: React (Vite) + Google Sheets como backend vía SheetDB
+> Deploy: Vercel | Sin backend propio | CRUD completo
+> Fecha: 12 marzo 2026
+
+---
+
+## 🎯 Objetivo
+
+Dashboard de gestión del proyecto de moda sostenible **Tracy Dust**.  
+- **Sin backend propio**: Google Sheets actúa como base de datos mediante **SheetDB** (REST API sin OAuth, gratuito hasta 500 req/mes).  
+- CRUD completo de tareas, KPIs y colaboradores.  
+- Colaboradores ligados a tareas: filtrado por owner + vista de carga de trabajo.
+
+---
+
+## 🗄️ Google Sheets — Estructura (3 pestañas)
+
+### Pestaña 1: `Tasks`
+| id | title | owner | deadline | status | notes | timeline_col | phase |
+|----|-------|-------|----------|--------|-------|--------------|-------|
+| uuid | texto | nombre | YYYY-MM-DD | not_started/in_progress/done | texto | now/next/later | fase |
+
+### Pestaña 2: `Collaborators`
+| id | name | location | role | color_hex | avatar_initials |
+|----|------|----------|------|-----------|-----------------|
+| 1 | Rosa | Madrid | Product / Suppliers | #6B0F1A | RO |
+| 2 | Uri | Barcelona | Branding / Marketing | #C9A96E | UR |
+
+### Pestaña 3: `KPIs`
+| id | category | label | value | updated_at |
+|----|----------|-------|-------|------------|
+| 1 | Product Development | Designs | 2/5 | fecha |
+| 2 | Marketing Growth | IG followers | 0 → 450 | fecha |
+| 3 | Business | CAC target | €25 | fecha |
+
+---
+
+## 🔌 Integración SheetDB
+
+```js
+// src/lib/sheets.js
+
+const SHEETDB_BASE = import.meta.env.VITE_SHEETDB_URL
+// URL formato: https://sheetdb.io/api/v1/XXXXXXXX
+
+export const sheetsApi = {
+  // TASKS
+  getTasks:    () => fetch(`${SHEETDB_BASE}?sheet=Tasks`).then(r => r.json()),
+  createTask:  (data) => fetch(`${SHEETDB_BASE}`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ data, sheet: 'Tasks' })
+  }),
+  updateTask:  (id, data) => fetch(`${SHEETDB_BASE}/id/${id}`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ data, sheet: 'Tasks' })
+  }),
+  deleteTask:  (id) => fetch(`${SHEETDB_BASE}/id/${id}?sheet=Tasks`, { method: 'DELETE' }),
+
+  // COLLABORATORS
+  getCollaborators: () => fetch(`${SHEETDB_BASE}?sheet=Collaborators`).then(r => r.json()),
+  createCollaborator: (data) => fetch(`${SHEETDB_BASE}`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ data, sheet: 'Collaborators' })
+  }),
+
+  // KPIs
+  getKPIs:    () => fetch(`${SHEETDB_BASE}?sheet=KPIs`).then(r => r.json()),
+  updateKPI:  (id, value) => fetch(`${SHEETDB_BASE}/id/${id}`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ data: { value, updated_at: new Date().toISOString() }, sheet: 'KPIs' })
+  }),
+}
+```
+
+**.env.local:**
+```
+VITE_SHEETDB_URL=https://sheetdb.io/api/v1/TU_ID_AQUI
+```
+
+---
+
+## 🎨 Identidad Visual Tracy Dust
+
+```css
+:root {
+  --td-burgundy:          #6B0F1A;
+  --td-burgundy-dark:     #4A0810;
+  --td-burgundy-light:    #8B2030;
+  --td-cream:             #F5F0E8;
+  --td-cream-soft:        #FAF7F2;
+  --td-gold:              #C9A96E;
+  --td-gold-light:        #E8D5A3;
+  --td-status-progress:   #E8A44A;
+  --td-status-not-started:#1A1A2E;
+  --td-status-done:       #2D6A4F;
+  --td-text-primary:      #1C1410;
+  --td-text-muted:        #7A6F65;
+  --td-border:            #E8E0D5;
+  --td-bg-app:            #F8F4EF;
+  --td-white:             #FFFFFF;
+}
+```
+
+### Tipografía
+```html
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Cormorant+Garamond:wght@400;500;600&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+```
+- **Brand / Headings grandes**: `Playfair Display`
+- **Section titles**: `Cormorant Garamond 600`
+- **UI / Body / Labels**: `DM Sans`
+
+---
+
+## 📐 Layout General
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  HEADER                                                         │
+│  [★ Tracy Dust]    [● Rosa(Madrid)] [Uri(Barcelona)]  [+Task]  │
+├─────────────────┬───────────────────────────────────────────────┤
+│                 │  TIMELINE — Now / Next / Later                │
+│   SIDEBAR       │  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│                 │  │  NOW     │  │  NEXT    │  │  LATER   │   │
+│  Project Phases │  │ [card]   │  │ [card]   │  │ [card]   │   │
+│  ────────────── │  └──────────┘  └──────────┘  └──────────┘   │
+│  KPIs           ├───────────────────────────────────────────────┤
+│  ────────────── │  TASKS TABLE                                  │
+│  Collaborators  │  Task | Owner | Deadline | Status | Edit/Del  │
+│  + workload     │  [rows...]                                    │
+└─────────────────┴───────────────────────────────────────────────┘
+```
+
+---
+
+## 📋 Secciones Detalladas
+
+### 1. Header
+```jsx
+// Componente: src/components/layout/Header.jsx
+// - Logo "Tracy Dust" con estrella SVG inline (Playfair Display, color granate)
+// - Pills de usuario: Rosa (Madrid) | Uri (Barcelona)
+//   → Click cambia el "activeUser" en estado global (Context)
+//   → Filtra las tasks de la tabla y timeline según activeUser
+//   → Granate cuando activo, gris cuando inactivo
+// - Botón "+ Task" → abre TaskModal (añadir nueva tarea)
+// - Botón "Sync" con icono → re-fetch de Google Sheets
+```
+
+### 2. Sidebar — Project Phases
+```jsx
+// Componente: src/components/layout/Sidebar.jsx
+// Lista de fases: click para filtrar tasks por fase
+const PHASES = [
+  "Diagnosis",
+  "Vision and objectives", 
+  "Product development",
+  "Supplier sourcing",      // ← activa ahora (resaltada en granate)
+  "Prototype",
+  "Branding",
+  "Marketing pre-launch",
+  "Production",
+  "Launch"
+]
+// Fase activa: bold + borde izquierdo granate 3px + fondo crema
+```
+
+### 3. Sidebar — KPIs
+```jsx
+// Componente: src/components/kpis/KPIPanel.jsx
+// Tres cards en fila dentro del sidebar
+// Click en valor → <input> editable inline
+// Blur / Enter → llama sheetsApi.updateKPI() + toast de confirmación
+
+const KPI_DEFAULTS = [
+  { id: "1", category: "Product Development", label: "Designs", value: "2/5" },
+  { id: "2", category: "Marketing Growth",    label: "IG followers", value: "0 → 450" },
+  { id: "3", category: "Business",            label: "CAC target", value: "€25" },
+]
+```
+
+### 4. Sidebar — Collaborators
+```jsx
+// Componente: src/components/collaboration/CollaboratorPanel.jsx
+// Muestra lista de colaboradores del Sheets (pestaña Collaborators)
+// Cada colaborador:
+//   - Avatar circular con initiales (color = color_hex del colaborador)
+//   - Nombre + ubicación
+//   - Rol (Product/Suppliers, Branding/Marketing...)
+//   - Contador: "3 tareas activas" (calculado desde tasks)
+//   - Click → filtra toda la vista (Timeline + Table) por ese owner
+// 
+// Botón "+ Colaborador" al pie → abre modal simple para añadir
+// (nombre, ubicación, rol, color) → POST a SheetDB pestaña Collaborators
+```
+
+### 5. Timeline Board
+```jsx
+// Componente: src/components/timeline/TimelineBoard.jsx
+// 3 columnas: now | next | later
+// Cada columna recibe tasks filtradas por timeline_col
+// Si hay activeUser seleccionado → filtra también por owner
+
+// TimelineCard.jsx:
+// - Borde izquierdo 3px según status (naranja/azul oscuro/verde)
+// - Avatar del owner (colores del colaborador)
+// - Badge de status
+// - Título + nota
+// - Deadline con icono calendario
+// - Hover: elevación sutil + cursor pointer
+// - Click → abre TaskModal en modo edit
+```
+
+### 6. Tasks Table
+```jsx
+// Componente: src/components/tasks/TasksTable.jsx
+// Columnas: Task | Owner (con avatar) | Deadline | Status | Notes / Edit
+//
+// Features:
+// - Filtro por activeUser del header (si hay uno seleccionado)
+// - Filtro por phase activa del sidebar
+// - Ordenación por deadline (asc por defecto)
+// - Edit → TaskModal pre-rellenado → PATCH en SheetDB
+// - Del → window.confirm("¿Eliminar tarea?") → DELETE en SheetDB
+// - Filas alternadas: #FFFFFF / #FAF7F2
+// - Hover: #F5EDE5
+
+// OwnerCell: muestra avatar circular coloreado + nombre del owner
+// El color del avatar viene de collaborators[owner].color_hex
+```
+
+### 7. TaskModal
+```jsx
+// Componente: src/components/tasks/TaskModal.jsx
+// Modo: 'create' | 'edit'
+// Campos:
+//   - Título (text, required)
+//   - Owner (select, opciones desde collaborators del Sheets)
+//   - Deadline (date picker)
+//   - Status (select: not_started | in_progress | done)
+//   - Timeline (select: now | next | later)
+//   - Phase (select, lista de PHASES)
+//   - Notes (textarea)
+//
+// Submit → POST (create) o PATCH (edit) en SheetDB
+// Animación: slide-up desde abajo + backdrop oscuro
+// Botón cancelar cierra sin guardar
+```
+
+---
+
+## 🔗 Lógica de Colaboradores ↔ Tareas
+
+```jsx
+// src/context/AppContext.jsx
+// Estado global con React Context:
+
+const AppContext = createContext()
+
+export function AppProvider({ children }) {
+  const [tasks, setTasks] = useState([])
+  const [collaborators, setCollaborators] = useState([])
+  const [kpis, setKpis] = useState([])
+  const [activeUser, setActiveUser] = useState(null)   // null = ver todos
+  const [activePhase, setActivePhase] = useState(null) // null = ver todas
+  const [loading, setLoading] = useState(true)
+
+  // Derivados
+  const filteredTasks = tasks.filter(t => {
+    if (activeUser && t.owner !== activeUser) return false
+    if (activePhase && t.phase !== activePhase) return false
+    return true
+  })
+
+  // Workload por colaborador (para CollaboratorPanel)
+  const workload = collaborators.map(c => ({
+    ...c,
+    taskCount: tasks.filter(t => t.owner === c.name && t.status !== 'done').length
+  }))
+
+  return (
+    <AppContext.Provider value={{
+      tasks, setTasks, filteredTasks,
+      collaborators, setCollaborators, workload,
+      kpis, setKpis,
+      activeUser, setActiveUser,
+      activePhase, setActivePhase,
+      loading, setLoading,
+    }}>
+      {children}
+    </AppContext.Provider>
+  )
+}
+```
+
+---
+
+## 🎭 StatusBadge
+
+```jsx
+// src/components/ui/StatusBadge.jsx
+const STATUS_CONFIG = {
+  in_progress: {
+    label: "In progress",
+    bg: "#FEF9EC", color: "#B45309", border: "#FCD34D"
+  },
+  not_started: {
+    label: "Not started",
+    bg: "#F0F0F5", color: "#1A1A2E", border: "#C7C7DC"
+  },
+  done: {
+    label: "Done",
+    bg: "#ECFDF5", color: "#065F46", border: "#6EE7B7"
+  },
+}
+
+export function StatusBadge({ status }) {
+  const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.not_started
+  return (
+    <span style={{
+      background: cfg.bg, color: cfg.color,
+      border: `1px solid ${cfg.border}`,
+      borderRadius: '6px', padding: '3px 10px',
+      fontSize: '12px', fontWeight: 500, fontFamily: 'DM Sans'
+    }}>
+      {cfg.label}
+    </span>
+  )
+}
+```
+
+---
+
+## 🗂️ Estructura de Ficheros
+
+```
+tracy-dust-dashboard/
+├── public/
+│   └── favicon.svg           # Logo TD simplificado
+├── src/
+│   ├── context/
+│   │   └── AppContext.jsx
+│   ├── lib/
+│   │   └── sheets.js         # SheetDB API wrapper
+│   ├── hooks/
+│   │   └── useSheets.js      # useTasks, useCollaborators, useKPIs
+│   ├── components/
+│   │   ├── layout/
+│   │   │   ├── Header.jsx
+│   │   │   └── Sidebar.jsx
+│   │   ├── timeline/
+│   │   │   ├── TimelineBoard.jsx
+│   │   │   └── TimelineCard.jsx
+│   │   ├── tasks/
+│   │   │   ├── TasksTable.jsx
+│   │   │   └── TaskModal.jsx
+│   │   ├── kpis/
+│   │   │   └── KPIPanel.jsx
+│   │   ├── collaboration/
+│   │   │   └── CollaboratorPanel.jsx
+│   │   └── ui/
+│   │       ├── StatusBadge.jsx
+│   │       ├── Avatar.jsx       # Círculo coloreado con iniciales
+│   │       ├── Toast.jsx        # Notificación de guardado
+│   │       └── LoadingSpinner.jsx
+│   ├── App.jsx
+│   ├── main.jsx
+│   └── index.css              # CSS variables + reset
+├── .env.local
+├── package.json
+└── vite.config.js
+```
+
+---
+
+## 📦 Dependencias
+
+```json
+{
+  "dependencies": {
+    "react": "^18",
+    "react-dom": "^18",
+    "lucide-react": "latest"
+  },
+  "devDependencies": {
+    "vite": "^5",
+    "@vitejs/plugin-react": "^4"
+  }
+}
+```
+> No se necesita Supabase. SheetDB se usa directamente con `fetch` nativo.
+
+---
+
+## 🚀 Setup Paso a Paso
+
+```bash
+# 1. Crear proyecto
+npm create vite@latest tracy-dust-dashboard -- --template react
+cd tracy-dust-dashboard
+npm install lucide-react
+
+# 2. Crear el Google Sheet con 3 pestañas: Tasks | Collaborators | KPIs
+#    Rellenar con datos iniciales (ver estructura arriba)
+
+# 3. Ir a sheetdb.io → Create API → pegar URL del Sheet
+#    Copiar la URL de la API (ej: https://sheetdb.io/api/v1/abc123)
+
+# 4. Crear .env.local
+echo "VITE_SHEETDB_URL=https://sheetdb.io/api/v1/TU_ID" > .env.local
+
+# 5. Desarrollar siguiendo esta spec
+npm run dev
+
+# 6. Deploy en Vercel
+#    vercel --prod  (o conectar repo en vercel.com)
+#    Añadir VITE_SHEETDB_URL en Vercel → Settings → Environment Variables
+```
+
+---
+
+## ✅ Criterios de Aceptación
+
+### Funcionalidad
+- [ ] Carga inicial de datos desde Google Sheets (Tasks + Collaborators + KPIs)
+- [ ] CRUD completo de tareas (crear, leer, editar, borrar) → sincroniza con Sheets
+- [ ] KPIs editables inline → sincroniza con Sheets
+- [ ] Añadir colaboradores → sincroniza con Sheets (pestaña Collaborators)
+- [ ] Filtro por usuario activo (Header) afecta Timeline + Table simultáneamente
+- [ ] Filtro por fase activa (Sidebar) afecta Table + Timeline
+- [ ] Workload counter por colaborador en el sidebar
+
+### UI/UX
+- [ ] Colores corporativos Tracy Dust aplicados (granate + crema + dorado)
+- [ ] Tipografía: Playfair Display en brand/headings, DM Sans en UI
+- [ ] StatusBadge con 3 estados correctamente coloreados
+- [ ] Avatar circular con iniciales y color del colaborador
+- [ ] Modal con animación slide-up + backdrop
+- [ ] Toast de confirmación tras guardar/borrar
+- [ ] Responsive desktop + tablet (sidebar colapsable en mobile)
+- [ ] Loading state mientras carga datos de Sheets
+
+### Datos iniciales en Google Sheets (pre-rellenar antes de primera carga)
+```
+Tasks: 4 tareas del screenshot
+Collaborators: Rosa (Madrid, #6B0F1A) | Uri (Barcelona, #C9A96E)
+KPIs: Designs 2/5 | IG 0→450 | CAC €25
+```
+
+---
+
+*Spec v2 — Tracy Dust Dashboard — Claude Code — 12 marzo 2026*
+*Stack: React + Vite + SheetDB (Google Sheets) + Vercel*
